@@ -52,6 +52,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y texlive-full latexmk biber python3-pygments xindy
 
+      - name: Clean aux files
+        run: |
+            latexmk -C || true
+            rm -f main.toc main.lof main.lot main.out main.mw main.acr* main.acn main.idx || true
+
+        
       - name: Build (pdflatex + biber/bibtex + glossaries + re-runs)
         run: |
             set -e

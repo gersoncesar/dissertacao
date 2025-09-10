@@ -36,6 +36,39 @@
 \usepackage{pdfpages}           % para adicionar documentos pdf ao trabalho
 \usepackage{xspace}
 
+% --- HYPERLINKS (seguro p/ não sujar o .toc) ---
+\usepackage{xcolor} % já está carregado acima; deixe aqui por garantia
+\makeatletter
+\@ifpackageloaded{hyperref}{%
+  % Se a classe já carregou hyperref, só ajustamos:
+  \hypersetup{
+    colorlinks=false,      % sem links coloridos
+    pdfborder={0 0 0}      % remove as bordas dos links
+  }%
+}{%
+  % Se (por qualquer motivo) o hyperref ainda não estiver carregado:
+  \usepackage[colorlinks=false]{hyperref}
+  \hypersetup{pdfborder={0 0 0}}
+}%
+\makeatother
+
+
+% --- HYPERLINKS (com cor, mas sem quebrar o .toc) --- basta tirar o comentario%
+%\usepackage{xcolor}
+%\makeatletter
+%\@ifpackageloaded{hyperref}{%
+%  \hypersetup{
+%    colorlinks=true,       % ativa cor no texto dos links
+%    linkcolor=black,       % cor de links internos (sumário)
+%    citecolor=black,       % cor de citações
+%    urlcolor=blue          % cor de URLs
+%  }%
+%}{%
+%  \usepackage[colorlinks=true,linkcolor=black,citecolor=black,urlcolor=blue]{hyperref}
+%}%
+%\makeatother
+
+
 
 % luiz: primeira letra maiúscula
 % solução 1
