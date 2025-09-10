@@ -1,8 +1,8 @@
-name: Build LaTeX template to docs/ (auto-detect)
+name: Build LaTeX to docs/ (robusto)
 
 on:
   push:
-    branches: [ "main" ]   # troque se sua branch for outra
+    branches: [ "main" ]   # troque se sua branch principal for outra
     paths:
       - "**/*.tex"
       - "**/*.bib"
@@ -12,15 +12,18 @@ on:
       - "**/*.cbx"
       - "**/*.lbx"
       - "**/*.ist"
-      - "**/*.gls"
+      - "**/*.glo"
       - "**/*.acn"
       - "**/*.acr"
-      - "**/*.alg"
       - ".github/workflows/pages-docs.yml"
   workflow_dispatch:
 
 permissions:
   contents: write
+
+env:
+  MAIN_TEX: "main.tex"          # ajuste se o seu arquivo principal tiver outro nome ou estiver em subpasta, ex: "tex/dissertacao.tex"
+  OUT_PDF_NAME: "main.pdf"      # nome do PDF publicado em docs/
 
 jobs:
   build-and-publish:
@@ -31,153 +34,95 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: List tree (debug)
+      - name: Show tree (debug)
         run: |
-          echo "Repo tree (depth 3):"
-          find . -maxdepth 3 -type f | sed 's/^/ - /'
+          echo "MAIN_TEX=${MAIN_TEX}"
+          echo "Repository tree (depth 2):"
+          find . -maxdepth 2 -type f -print
 
-      - name: Detect main TEX
-        id: detecttex
-        shell: bash
+      - name: Ensure MAIN_TEX exists
         run: |
-          set -e
-          # 1) candidatos contendo \documentclass
-          mapfile -t CANDS < <(grep -RIl --include="*.tex" "\\documentclass" . | sort)
-
-          if [ "${#CANDS[@]}" -eq 0 ]; then
-            echo "::error ::Nenhum arquivo .tex com \\documentclass encontrado."
+          if [ ! -f "${MAIN_TEX}" ]; then
+            echo "::error ::Arquivo principal não encontrado: ${MAIN_TEX}"
             exit 1
           fi
-
-          # Heurística: preferir nomes comuns se houver mais de um
-          pick=""
-          for guess in main.tex dissertation.tex dissertacao.tex tese.tex thesis.tex paper.tex; do
-            for f in "${CANDS[@]}"; do
-              base="$(basename "$f")"
-              if [ "$base" = "$guess" ]; then pick="$f"; break 2; fi
-            done
-          done
-
-          # Se ainda não escolheu, pega o primeiro
-          if [ -z "$pick" ]; then pick="${CANDS[0]}"; fi
-
-          echo "MAIN_TEX=$pick" | tee -a $GITHUB_ENV
-          echo "Escolhido: $pick"
-
-      - name: Detect engine and features
-        id: detecteng
-        shell: bash
-        run: |
-          set -e
-          TEX="${MAIN_TEX}"
-          TEXDIR="$(dirname "$TEX")"
-
-          # Sondar o projeto todo (não só 1 arquivo) por pistas
-          has_fontspec=$(grep -RIl --include="*.tex" "\\usepackage{fontspec}" . | wc -l || true)
-          has_polyglossia=$(grep -RIl --include="*.tex" "polyglossia" . | wc -l || true)
-          has_lua=$(grep -RIl --include="*.tex" "luacode\\|luatex" . | wc -l || true)
-          has_minted=$(grep -RIl --include="*.tex" "minted" . | wc -l || true)
-
-          ENGINE="pdflatex"
-          if [ "$has_fontspec" -gt 0 ] || [ "$has_polyglossia" -gt 0 ]; then
-            ENGINE="xelatex"
-          elif [ "$has_lua" -gt 0 ]; then
-            ENGINE="lualatex"
-          fi
-
-          SHELL_ESCAPE="false"
-          if [ "$has_minted" -gt 0 ]; then
-            SHELL_ESCAPE="true"
-          fi
-
-          echo "ENGINE=$ENGINE" | tee -a $GITHUB_ENV
-          echo "SHELL_ESCAPE=$SHELL_ESCAPE" | tee -a $GITHUB_ENV
-          echo "Engine detectado: $ENGINE"
-          echo "Shell-escape (minted): $SHELL_ESCAPE"
 
       - name: Install TeX Live (full)
         run: |
           sudo apt-get update
           sudo apt-get install -y texlive-full latexmk biber python3-pygments xindy
 
-      - name: Build (explicit runs: bib + glossaries + reruns)
+      - name: Build (pdflatex + biber/bibtex + glossaries + re-runs)
         run: |
           set -e
-          TEX="${MAIN_TEX:-main.tex}"
+          TEX="${MAIN_TEX}"
           TEXDIR="$(dirname "$TEX")"
           TEXBASE="$(basename "$TEX")"
           JOBNAME="$(basename "$TEXBASE" .tex)"
 
-          # Entrar na pasta do .tex principal, se estiver em subpasta
+          # entrar na pasta se houver subpasta
           if [ "$TEXDIR" != "." ]; then cd "$TEXDIR"; fi
 
-          echo "== Passo 1: pdflatex inicial =="
+          echo "== 1) pdflatex inicial =="
           pdflatex -interaction=nonstopmode -file-line-error "$TEXBASE" || true
 
-          echo "== Passo 2: Bibliografia (auto: biber OU bibtex) =="
+          echo "== 2) bibliografia (biber ou bibtex) =="
           if [ -f "$JOBNAME.bcf" ]; then
-            echo "biber detectado ($JOBNAME.bcf) -> executando biber"
             biber "$JOBNAME" || true
           else
-            # Heurística simples: \bibdata no .aux indica bibtex
-            if grep -q '\\bibdata' "$JOBNAME.aux" 2>/dev/null; then
-              echo "bibtex detectado pelo .aux -> executando bibtex"
+            if [ -f "$JOBNAME.aux" ] && grep -q '\\bibdata' "$JOBNAME.aux"; then
               bibtex "$JOBNAME" || true
-            else
-              echo "Nenhum mecanismo de bibliografia detectado (seguindo adiante)"
             fi
           fi
 
-          echo "== Passo 3: Glossários/índices (se existirem) =="
-          # makeglossaries (xindy) se houver arquivos de glossário/acrônimo
-          if ls "$JOBNAME".{glo,acn,acr,ist} >/dev/null 2>&1; then
-            echo "Executando makeglossaries"
+          echo "== 3) glossários/índice (se existirem) =="
+          if ls "$JOBNAME".glo "$JOBNAME".acn "$JOBNAME".acr "$JOBNAME".ist >/dev/null 2>&1; then
             makeglossaries "$JOBNAME" || true
           fi
-          # makeindex para índice remissivo, se existir .idx
           if [ -f "$JOBNAME.idx" ]; then
-            echo "Executando makeindex"
             makeindex "$JOBNAME" || true
           fi
 
-          echo "== Passo 4: Reruns do LaTeX para estabilizar refs/listas =="
+          echo "== 4) pdflatex (2x) para estabilizar referências =="
           pdflatex -interaction=nonstopmode -file-line-error "$TEXBASE" || true
           pdflatex -interaction=nonstopmode -file-line-error "$TEXBASE" || true
 
-          # Checar PDF
           if [ ! -f "$JOBNAME.pdf" ]; then
             echo "::error ::PDF não foi gerado. Verifique os logs acima."
             exit 1
           fi
 
-          # Voltar pra raiz do repo e publicar em docs/
+          # voltar para a raiz e publicar
           cd - > /dev/null
           mkdir -p docs
-          cp -f "$TEXDIR/$JOBNAME.pdf" "docs/$JOBNAME.pdf"
+          cp -f "$TEXDIR/$JOBNAME.pdf" "docs/${OUT_PDF_NAME}"
 
-          # Atualizar/gerar index.html com link
+          # criar/atualizar index.html sem heredoc / sem { } >
           if [ ! -f docs/index.html ]; then
-            {
-              echo '<!DOCTYPE html>'
-              echo '<html lang="pt-BR">'
-              echo '<head><meta charset="utf-8"><title>Documentos</title></head>'
-              echo '<body>'
-              echo '  <h1>PDFs gerados</h1>'
-              echo "  <p><a href=\"./$JOBNAME.pdf\">Baixar $JOBNAME.pdf</a></p>"
-              echo '</body>'
-              echo '</html>'
-            } > docs/index.html
+            echo '<!DOCTYPE html>' > docs/index.html
+            echo '<html lang="pt-BR">' >> docs/index.html
+            echo '<head><meta charset="utf-8"><title>Documentos</title></head>' >> docs/index.html
+            echo '<body>' >> docs/index.html
+            echo '  <h1>PDFs gerados</h1>' >> docs/index.html
+            echo "  <p><a href=\"./${OUT_PDF_NAME}\">Baixar ${OUT_PDF_NAME}</a></p>" >> docs/index.html
+            echo '</body>' >> docs/index.html
+            echo '</html>' >> docs/index.html
           else
-            grep -q "$JOBNAME.pdf" docs/index.html || \
-              sed -i "s#</body>#  <p><a href=\"./$JOBNAME.pdf\">Baixar $JOBNAME.pdf</a></p>\n</body>#g" docs/index.html
+            if ! grep -q "${OUT_PDF_NAME}" docs/index.html; then
+              tmpfile="docs/index.tmp.html"
+              awk -v link="<p><a href=\"./${OUT_PDF_NAME}\">Baixar ${OUT_PDF_NAME}</a></p>" '
+                /<\/body>/ && !done { print link; done=1 }
+                { print }
+              ' docs/index.html > "$tmpfile"
+              mv "$tmpfile" docs/index.html
+            fi
           fi
 
           echo "Conteúdo de docs/:"
           ls -la docs
 
-
       - name: Commit PDF into docs/
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "ci: update PDF(s) in docs [skip ci]"
+          commit_message: "ci: update PDF in docs [skip ci]"
           file_pattern: docs/*
