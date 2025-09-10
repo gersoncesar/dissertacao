@@ -1,0 +1,164 @@
+name: Build LaTeX template to docs/ (auto-detect)
+
+on:
+  push:
+    branches: [ "main" ]   # troque se sua branch for outra
+    paths:
+      - "**/*.tex"
+      - "**/*.bib"
+      - "**/*.sty"
+      - "**/*.cls"
+      - "**/*.bbx"
+      - "**/*.cbx"
+      - "**/*.lbx"
+      - "**/*.ist"
+      - "**/*.gls"
+      - "**/*.acn"
+      - "**/*.acr"
+      - "**/*.alg"
+      - ".github/workflows/pages-docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: List tree (debug)
+        run: |
+          echo "Repo tree (depth 3):"
+          find . -maxdepth 3 -type f | sed 's/^/ - /'
+
+      - name: Detect main TEX
+        id: detecttex
+        shell: bash
+        run: |
+          set -e
+          # 1) candidatos contendo \documentclass
+          mapfile -t CANDS < <(grep -RIl --include="*.tex" "\\documentclass" . | sort)
+
+          if [ "${#CANDS[@]}" -eq 0 ]; then
+            echo "::error ::Nenhum arquivo .tex com \\documentclass encontrado."
+            exit 1
+          fi
+
+          # Heurística: preferir nomes comuns se houver mais de um
+          pick=""
+          for guess in main.tex dissertation.tex dissertacao.tex tese.tex thesis.tex paper.tex; do
+            for f in "${CANDS[@]}"; do
+              base="$(basename "$f")"
+              if [ "$base" = "$guess" ]; then pick="$f"; break 2; fi
+            done
+          done
+
+          # Se ainda não escolheu, pega o primeiro
+          if [ -z "$pick" ]; then pick="${CANDS[0]}"; fi
+
+          echo "MAIN_TEX=$pick" | tee -a $GITHUB_ENV
+          echo "Escolhido: $pick"
+
+      - name: Detect engine and features
+        id: detecteng
+        shell: bash
+        run: |
+          set -e
+          TEX="${MAIN_TEX}"
+          TEXDIR="$(dirname "$TEX")"
+
+          # Sondar o projeto todo (não só 1 arquivo) por pistas
+          has_fontspec=$(grep -RIl --include="*.tex" "\\usepackage{fontspec}" . | wc -l || true)
+          has_polyglossia=$(grep -RIl --include="*.tex" "polyglossia" . | wc -l || true)
+          has_lua=$(grep -RIl --include="*.tex" "luacode\\|luatex" . | wc -l || true)
+          has_minted=$(grep -RIl --include="*.tex" "minted" . | wc -l || true)
+
+          ENGINE="pdflatex"
+          if [ "$has_fontspec" -gt 0 ] || [ "$has_polyglossia" -gt 0 ]; then
+            ENGINE="xelatex"
+          elif [ "$has_lua" -gt 0 ]; then
+            ENGINE="lualatex"
+          fi
+
+          SHELL_ESCAPE="false"
+          if [ "$has_minted" -gt 0 ]; then
+            SHELL_ESCAPE="true"
+          fi
+
+          echo "ENGINE=$ENGINE" | tee -a $GITHUB_ENV
+          echo "SHELL_ESCAPE=$SHELL_ESCAPE" | tee -a $GITHUB_ENV
+          echo "Engine detectado: $ENGINE"
+          echo "Shell-escape (minted): $SHELL_ESCAPE"
+
+      - name: Install TeX Live + tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            latexmk \
+            texlive-latex-recommended texlive-latex-extra texlive-fonts-recommended texlive-fonts-extra \
+            texlive-bibtex-extra biber \
+            texlive-lang-portuguese \
+            texlive-science texlive-pictures texlive-humanities \
+            texlive-xetex texlive-luatex \
+            xindy \
+            python3-pygments
+
+      - name: Build (latexmk)
+        run: |
+          set -e
+          TEX="${MAIN_TEX}"
+          TEXDIR="$(dirname "$TEX")"
+          TEXBASE="$(basename "$TEX")"
+
+          # Seleciona engine p/ latexmk
+          ENGINE_FLAG="-pdf"
+          if [ "$ENGINE" = "xelatex" ]; then ENGINE_FLAG="-xelatex"; fi
+          if [ "$ENGINE" = "lualatex" ]; then ENGINE_FLAG="-lualatex"; fi
+
+          ESCAPE=""
+          if [ "$SHELL_ESCAPE" = "true" ]; then ESCAPE="-shell-escape"; fi
+
+          # Entrar na pasta do projeto se necessário
+          if [ "$TEXDIR" != "." ]; then cd "$TEXDIR"; fi
+
+          echo "Compilando: latexmk $ENGINE_FLAG -interaction=nonstopmode -file-line-error $ESCAPE $TEXBASE"
+          latexmk $ENGINE_FLAG -interaction=nonstopmode -file-line-error $ESCAPE "$TEXBASE"
+
+          PDF_NAME="$(basename "$TEXBASE" .tex).pdf"
+          test -f "$PDF_NAME" || (echo "::error ::PDF não gerado." && exit 1)
+
+          # Voltar e publicar
+          cd - > /dev/null
+          mkdir -p docs
+          cp -f "$TEXDIR/$PDF_NAME" "docs/$PDF_NAME"
+
+          # Cria/atualiza index.html
+          if [ ! -f docs/index.html ]; then
+            {
+              echo '<!DOCTYPE html>'
+              echo '<html lang="pt-BR">'
+              echo '<head><meta charset="utf-8"><title>Documentos</title></head>'
+              echo '<body>'
+              echo '  <h1>PDFs gerados</h1>'
+              echo "  <p><a href=\"./$PDF_NAME\">Baixar $PDF_NAME</a></p>"
+              echo '</body>'
+              echo '</html>'
+            } > docs/index.html
+          else
+            grep -q "$PDF_NAME" docs/index.html || \
+              sed -i "s#</body>#  <p><a href=\"./$PDF_NAME\">Baixar $PDF_NAME</a></p>\n</body>#g" docs/index.html
+          fi
+
+          echo "Conteúdo de docs/:"
+          ls -la docs
+
+      - name: Commit PDF into docs/
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "ci: update PDF(s) in docs [skip ci]"
+          file_pattern: docs/*

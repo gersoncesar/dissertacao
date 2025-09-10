@@ -1,0 +1,27 @@
+# LaTeX intermediates
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.idx
+*.ilg
+*.ind
+*.log
+*.lot
+*.lof
+*.out
+*.run.xml
+*.synctex.gz
+*.toc
+*.fls
+*.fdb_latexmk
+*.xdv
+
+# Build dirs comuns
+_build/
+build/
+out/
+
+# IDE / SO
+.vscode/
+.DS_Store
