@@ -54,72 +54,78 @@ jobs:
 
       - name: Build (pdflatex + biber/bibtex + glossaries + re-runs)
         run: |
-          set -e
-          TEX="${MAIN_TEX}"
-          TEXDIR="$(dirname "$TEX")"
-          TEXBASE="$(basename "$TEX")"
-          JOBNAME="$(basename "$TEXBASE" .tex)"
+            set -e
+            TEX="${MAIN_TEX}"
+            TEXDIR="$(dirname "$TEX")"
+            TEXBASE="$(basename "$TEX")"
+            JOBNAME="$(basename "$TEXBASE" .tex)"
+            OUTPDF="${OUT_PDF_NAME:-$JOBNAME.pdf}"
 
-          # entrar na pasta se houver subpasta
-          if [ "$TEXDIR" != "." ]; then cd "$TEXDIR"; fi
-
-          echo "== 1) pdflatex inicial =="
-          pdflatex -interaction=nonstopmode -file-line-error "$TEXBASE" || true
-
-          echo "== 2) bibliografia (biber ou bibtex) =="
-          if [ -f "$JOBNAME.bcf" ]; then
-            biber "$JOBNAME" || true
-          else
-            if [ -f "$JOBNAME.aux" ] && grep -q '\\bibdata' "$JOBNAME.aux"; then
-              bibtex "$JOBNAME" || true
+            # entrar na pasta se houver subpasta
+            ENTERED_SUBDIR=0
+            if [ "$TEXDIR" != "." ]; then
+            cd "$TEXDIR"
+            ENTERED_SUBDIR=1
             fi
-          fi
 
-          echo "== 3) glossários/índice (se existirem) =="
-          if ls "$JOBNAME".glo "$JOBNAME".acn "$JOBNAME".acr "$JOBNAME".ist >/dev/null 2>&1; then
+            echo "== 1) pdflatex inicial =="
+            pdflatex -interaction=nonstopmode -file-line-error "$TEXBASE" || true
+
+            echo "== 2) bibliografia (biber ou bibtex) =="
+            if [ -f "$JOBNAME.bcf" ]; then
+            biber "$JOBNAME" || true
+            else
+            if [ -f "$JOBNAME.aux" ] && grep -q '\\bibdata' "$JOBNAME.aux"; then
+                bibtex "$JOBNAME" || true
+            fi
+            fi
+
+            echo "== 3) glossários/índice (se existirem) =="
+            if ls "$JOBNAME".glo "$JOBNAME".acn "$JOBNAME".acr "$JOBNAME".ist >/dev/null 2>&1; then
             makeglossaries "$JOBNAME" || true
-          fi
-          if [ -f "$JOBNAME.idx" ]; then
+            fi
+            if [ -f "$JOBNAME.idx" ]; then
             makeindex "$JOBNAME" || true
-          fi
+            fi
 
-          echo "== 4) pdflatex (2x) para estabilizar referências =="
-          pdflatex -interaction=nonstopmode -file-line-error "$TEXBASE" || true
-          pdflatex -interaction=nonstopmode -file-line-error "$TEXBASE" || true
+            echo "== 4) pdflatex (2x) para estabilizar referências =="
+            pdflatex -interaction=nonstopmode -file-line-error "$TEXBASE" || true
+            pdflatex -interaction=nonstopmode -file-line-error "$TEXBASE" || true
 
-          if [ ! -f "$JOBNAME.pdf" ]; then
+            if [ ! -f "$JOBNAME.pdf" ]; then
             echo "::error ::PDF não foi gerado. Verifique os logs acima."
             exit 1
-          fi
+            fi
 
-          # voltar para a raiz e publicar
-          cd - > /dev/null
-          mkdir -p docs
-          cp -f "$TEXDIR/$JOBNAME.pdf" "docs/${OUT_PDF_NAME}"
+            # voltar para a raiz (apenas se entrou em subpasta) e publicar
+            if [ "$ENTERED_SUBDIR" -eq 1 ]; then cd - > /dev/null; fi
+            mkdir -p docs
+            cp -f "$TEXDIR/$JOBNAME.pdf" "docs/$OUTPDF"
 
-          # criar/atualizar index.html sem heredoc / sem { } >
-          if [ ! -f docs/index.html ]; then
+            # criar/atualizar index.html sem heredoc
+            if [ ! -f docs/index.html ]; then
             echo '<!DOCTYPE html>' > docs/index.html
             echo '<html lang="pt-BR">' >> docs/index.html
             echo '<head><meta charset="utf-8"><title>Documentos</title></head>' >> docs/index.html
             echo '<body>' >> docs/index.html
             echo '  <h1>PDFs gerados</h1>' >> docs/index.html
-            echo "  <p><a href=\"./${OUT_PDF_NAME}\">Baixar ${OUT_PDF_NAME}</a></p>" >> docs/index.html
+            echo "  <p><a href=\"./$OUTPDF\">Baixar $OUTPDF</a></p>" >> docs/index.html
             echo '</body>' >> docs/index.html
             echo '</html>' >> docs/index.html
-          else
-            if ! grep -q "${OUT_PDF_NAME}" docs/index.html; then
-              tmpfile="docs/index.tmp.html"
-              awk -v link="<p><a href=\"./${OUT_PDF_NAME}\">Baixar ${OUT_PDF_NAME}</a></p>" '
+            else
+            if ! grep -q "$OUTPDF" docs/index.html; then
+                tmpfile="docs/index.tmp.html"
+                awk -v link="<p><a href=\"./$OUTPDF\">Baixar $OUTPDF</a></p>" '
                 /<\/body>/ && !done { print link; done=1 }
                 { print }
-              ' docs/index.html > "$tmpfile"
-              mv "$tmpfile" docs/index.html
+                ' docs/index.html > "$tmpfile"
+                mv "$tmpfile" docs/index.html
             fi
-          fi
+            fi
 
-          echo "Conteúdo de docs/:"
-          ls -la docs
+            echo "Conteúdo de docs/:"
+            ls -la docs
+
 
       - name: Commit PDF into docs/
         uses: stefanzweifel/git-auto-commit-action@v5
