@@ -100,36 +100,62 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y texlive-full latexmk biber python3-pygments xindy
 
-      - name: Build (latexmk)
+      - name: Build (explicit runs: bib + glossaries + reruns)
         run: |
           set -e
-          TEX="${MAIN_TEX}"
+          TEX="${MAIN_TEX:-main.tex}"
           TEXDIR="$(dirname "$TEX")"
           TEXBASE="$(basename "$TEX")"
+          JOBNAME="$(basename "$TEXBASE" .tex)"
 
-          # Seleciona engine p/ latexmk
-          ENGINE_FLAG="-pdf"
-          if [ "$ENGINE" = "xelatex" ]; then ENGINE_FLAG="-xelatex"; fi
-          if [ "$ENGINE" = "lualatex" ]; then ENGINE_FLAG="-lualatex"; fi
-
-          ESCAPE=""
-          if [ "$SHELL_ESCAPE" = "true" ]; then ESCAPE="-shell-escape"; fi
-
-          # Entrar na pasta do projeto se necessário
+          # Entrar na pasta do .tex principal, se estiver em subpasta
           if [ "$TEXDIR" != "." ]; then cd "$TEXDIR"; fi
 
-          echo "Compilando: latexmk $ENGINE_FLAG -interaction=nonstopmode -file-line-error $ESCAPE $TEXBASE"
-          latexmk $ENGINE_FLAG -interaction=nonstopmode -file-line-error $ESCAPE "$TEXBASE"
+          echo "== Passo 1: pdflatex inicial =="
+          pdflatex -interaction=nonstopmode -file-line-error "$TEXBASE" || true
 
-          PDF_NAME="$(basename "$TEXBASE" .tex).pdf"
-          test -f "$PDF_NAME" || (echo "::error ::PDF não gerado." && exit 1)
+          echo "== Passo 2: Bibliografia (auto: biber OU bibtex) =="
+          if [ -f "$JOBNAME.bcf" ]; then
+            echo "biber detectado ($JOBNAME.bcf) -> executando biber"
+            biber "$JOBNAME" || true
+          else
+            # Heurística simples: \bibdata no .aux indica bibtex
+            if grep -q '\\bibdata' "$JOBNAME.aux" 2>/dev/null; then
+              echo "bibtex detectado pelo .aux -> executando bibtex"
+              bibtex "$JOBNAME" || true
+            else
+              echo "Nenhum mecanismo de bibliografia detectado (seguindo adiante)"
+            fi
+          fi
 
-          # Voltar e publicar
+          echo "== Passo 3: Glossários/índices (se existirem) =="
+          # makeglossaries (xindy) se houver arquivos de glossário/acrônimo
+          if ls "$JOBNAME".{glo,acn,acr,ist} >/dev/null 2>&1; then
+            echo "Executando makeglossaries"
+            makeglossaries "$JOBNAME" || true
+          fi
+          # makeindex para índice remissivo, se existir .idx
+          if [ -f "$JOBNAME.idx" ]; then
+            echo "Executando makeindex"
+            makeindex "$JOBNAME" || true
+          fi
+
+          echo "== Passo 4: Reruns do LaTeX para estabilizar refs/listas =="
+          pdflatex -interaction=nonstopmode -file-line-error "$TEXBASE" || true
+          pdflatex -interaction=nonstopmode -file-line-error "$TEXBASE" || true
+
+          # Checar PDF
+          if [ ! -f "$JOBNAME.pdf" ]; then
+            echo "::error ::PDF não foi gerado. Verifique os logs acima."
+            exit 1
+          fi
+
+          # Voltar pra raiz do repo e publicar em docs/
           cd - > /dev/null
           mkdir -p docs
-          cp -f "$TEXDIR/$PDF_NAME" "docs/$PDF_NAME"
+          cp -f "$TEXDIR/$JOBNAME.pdf" "docs/$JOBNAME.pdf"
 
-          # Cria/atualiza index.html
+          # Atualizar/gerar index.html com link
           if [ ! -f docs/index.html ]; then
             {
               echo '<!DOCTYPE html>'
@@ -137,17 +163,18 @@ jobs:
               echo '<head><meta charset="utf-8"><title>Documentos</title></head>'
               echo '<body>'
               echo '  <h1>PDFs gerados</h1>'
-              echo "  <p><a href=\"./$PDF_NAME\">Baixar $PDF_NAME</a></p>"
+              echo "  <p><a href=\"./$JOBNAME.pdf\">Baixar $JOBNAME.pdf</a></p>"
               echo '</body>'
               echo '</html>'
             } > docs/index.html
           else
-            grep -q "$PDF_NAME" docs/index.html || \
-              sed -i "s#</body>#  <p><a href=\"./$PDF_NAME\">Baixar $PDF_NAME</a></p>\n</body>#g" docs/index.html
+            grep -q "$JOBNAME.pdf" docs/index.html || \
+              sed -i "s#</body>#  <p><a href=\"./$JOBNAME.pdf\">Baixar $JOBNAME.pdf</a></p>\n</body>#g" docs/index.html
           fi
 
           echo "Conteúdo de docs/:"
           ls -la docs
+
 
       - name: Commit PDF into docs/
         uses: stefanzweifel/git-auto-commit-action@v5
